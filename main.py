@@ -59,8 +59,9 @@ class StreamlitApp:
         self.analyzer = DataAnalyzer()
         
     def run(self):
-        st.title("Comsol Advanced Data Analysis and Visualization")
-        st.subtitle("Shankar Dutt")
+        st.title("Comsol Data Analysis and Visualization")
+        st.header("Shankar Dutt")
+        st.subheader("shankar.dutt@anu.edu.au")
         st.write("Upload your data file to analyze patterns and create visualizations.")
         
         # File upload
