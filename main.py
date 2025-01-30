@@ -3,28 +3,26 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set
+from collections import OrderedDict
 import io
 
 class DataAnalyzer:
     def __init__(self):
         self.df = None
         self.pattern_columns = []
-        self.value_columns = []
+        self.numeric_columns = []
         
     def load_data(self, file) -> None:
         """Load and preprocess the data file."""
-        # Read the content of the uploaded file
         content = file.getvalue().decode('utf-8')
         
-        # Skip comment lines starting with %
+        # Skip comment lines and get headers
         lines = [line for line in content.split('\n') if line.strip() and not line.startswith('%')]
-        
-        # Get headers from the last comment line
         headers = [h.strip() for h in content.split('\n') if h.startswith('%')][-1].replace('%', '').split('  ')
         headers = [h.strip() for h in headers if h.strip()]
         
-        # Parse the data lines
+        # Parse data lines
         data = []
         for line in lines:
             values = [val.strip() for val in line.split() if val.strip()]
@@ -38,28 +36,37 @@ class DataAnalyzer:
         for col in self.df.columns:
             try:
                 self.df[col] = pd.to_numeric(self.df[col])
+                if col not in self.numeric_columns:
+                    self.numeric_columns.append(col)
             except:
                 continue
-    
-    def identify_patterns(self) -> Dict[str, List[Any]]:
-        """Identify columns with repeating patterns."""
-        patterns = {}
+                
+    def identify_patterns(self, threshold_ratio: float = 0.5) -> Dict[str, List[Any]]:
+        """
+        Identify columns with repeating patterns.
+        threshold_ratio: maximum unique values / total values ratio to consider as pattern
+        """
+        patterns = OrderedDict()
         for col in self.df.columns:
-            unique_values = self.df[col].unique()
-            if len(unique_values) < len(self.df) / 2:  # If column has repeated values
-                patterns[col] = sorted(unique_values)
+            unique_values = sorted(self.df[col].unique())
+            if len(unique_values) < len(self.df) * threshold_ratio:
+                patterns[col] = unique_values
         return patterns
     
-    def get_filtered_data(self, pattern_col: str, pattern_value: Any) -> pd.DataFrame:
-        """Get data filtered by pattern value."""
-        return self.df[self.df[pattern_col] == pattern_value]
+    def get_filtered_data(self, pattern_filters: Dict[str, Any]) -> pd.DataFrame:
+        """Get data filtered by multiple pattern values."""
+        filtered_df = self.df.copy()
+        for col, value in pattern_filters.items():
+            if value is not None:
+                filtered_df = filtered_df[filtered_df[col] == value]
+        return filtered_df
 
 class StreamlitApp:
     def __init__(self):
         self.analyzer = DataAnalyzer()
         
     def run(self):
-        st.title("Comsol Data Analysis and Visualization")
+        st.title("Comsol Multi-Pattern Data Analysis")
         st.header("Shankar Dutt")
         st.subheader("shankar.dutt@anu.edu.au")
         st.write("Upload your data file to analyze patterns and create visualizations.")
@@ -75,78 +82,98 @@ class StreamlitApp:
             patterns = self.analyzer.identify_patterns()
             
             if patterns:
-                st.header("Detected Patterns")
+                st.header("Pattern Selection")
                 
-                # Pattern selection
-                pattern_col = st.selectbox(
-                    "Select pattern column:",
-                    options=list(patterns.keys())
-                )
+                # Create pattern filters
+                pattern_filters = {}
+                cols = st.columns(min(3, len(patterns)))  # Up to 3 columns
                 
-                if pattern_col:
+                for idx, (col_name, unique_values) in enumerate(patterns.items()):
+                    with cols[idx % 3]:
+                        pattern_filters[col_name] = st.selectbox(
+                            f"Select {col_name}:",
+                            options=[None] + list(unique_values),
+                            help=f"Filter by {col_name}"
+                        )
+                
+                # Remove None values from filters
+                active_filters = {k: v for k, v in pattern_filters.items() if v is not None}
+                
+                if active_filters:
+                    # Get filtered data
+                    filtered_data = self.analyzer.get_filtered_data(active_filters)
+                    
                     # Create tabs for different visualizations
-                    tab1, tab2 = st.tabs(["Single Pattern Plot", "Compare Patterns"])
+                    tab1, tab2 = st.tabs(["2D Plot", "3D Plot"])
                     
                     with tab1:
-                        self.single_pattern_plot(pattern_col, patterns)
+                        self.create_2d_plot(filtered_data, active_filters)
                     
                     with tab2:
-                        self.compare_patterns_plot(pattern_col, patterns)
+                        self.create_3d_plot(filtered_data, active_filters)
+                else:
+                    st.info("Select at least one pattern filter to visualize data")
             else:
                 st.warning("No repeating patterns found in the data.")
     
-    def single_pattern_plot(self, pattern_col: str, patterns: Dict[str, List[Any]]):
-        """Create single pattern plot."""
-        st.subheader("Single Pattern Visualization")
+    def create_2d_plot(self, data: pd.DataFrame, filters: Dict[str, Any]):
+        """Create 2D plot with selected axes."""
+        st.subheader("2D Visualization")
         
-        # Select pattern value
-        pattern_value = st.selectbox(
-            f"Select value for {pattern_col}:",
-            options=patterns[pattern_col]
-        )
+        # Get available columns (excluding pattern columns)
+        available_cols = [col for col in data.columns if col not in filters]
         
-        # Get filtered data
-        filtered_data = self.analyzer.get_filtered_data(pattern_col, pattern_value)
+        # Select axes
+        col1, col2 = st.columns(2)
+        with col1:
+            x_col = st.selectbox("Select X-axis:", options=available_cols, key="2d_x")
+        with col2:
+            y_col = st.selectbox("Select Y-axis:", options=available_cols, key="2d_y")
         
-        # Select columns for x and y axes
-        remaining_cols = [col for col in filtered_data.columns if col != pattern_col]
-        x_col = st.selectbox("Select X-axis:", options=remaining_cols, key="single_x")
-        y_col = st.selectbox("Select Y-axis:", options=remaining_cols, key="single_y")
-        
-        # Create plot
         if x_col and y_col:
-            fig = px.scatter(filtered_data, x=x_col, y=y_col, 
-                           title=f"{y_col} vs {x_col} for {pattern_col}={pattern_value}")
+            # Create plot
+            fig = px.scatter(data, x=x_col, y=y_col,
+                           title=f"{y_col} vs {x_col}")
+            
+            # Add filter information to title
+            filter_text = " | ".join([f"{k}={v}" for k, v in filters.items()])
+            fig.update_layout(title=f"{y_col} vs {x_col}<br><sup>Filters: {filter_text}</sup>")
+            
             fig.update_traces(mode='lines+markers')
             st.plotly_chart(fig)
     
-    def compare_patterns_plot(self, pattern_col: str, patterns: Dict[str, List[Any]]):
-        """Create comparison plot for different pattern values."""
-        st.subheader("Pattern Comparison Visualization")
+    def create_3d_plot(self, data: pd.DataFrame, filters: Dict[str, Any]):
+        """Create 3D plot with selected axes."""
+        st.subheader("3D Visualization")
         
-        # Select columns for x and y axes
-        remaining_cols = [col for col in self.analyzer.df.columns if col != pattern_col]
-        x_col = st.selectbox("Select X-axis:", options=remaining_cols, key="compare_x")
-        y_col = st.selectbox("Select Y-axis:", options=remaining_cols, key="compare_y")
+        # Get available columns (excluding pattern columns)
+        available_cols = [col for col in data.columns if col not in filters]
         
-        if x_col and y_col:
-            fig = go.Figure()
+        # Select axes
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            x_col = st.selectbox("Select X-axis:", options=available_cols, key="3d_x")
+        with col2:
+            y_col = st.selectbox("Select Y-axis:", options=available_cols, key="3d_y")
+        with col3:
+            z_col = st.selectbox("Select Z-axis:", options=available_cols, key="3d_z")
+        
+        if x_col and y_col and z_col:
+            # Create 3D plot
+            fig = px.scatter_3d(data, x=x_col, y=y_col, z=z_col,
+                              title=f"3D Plot: {z_col} vs {y_col} vs {x_col}")
             
-            # Add traces for each pattern value
-            for value in patterns[pattern_col]:
-                filtered_data = self.analyzer.get_filtered_data(pattern_col, value)
-                fig.add_trace(go.Scatter(
-                    x=filtered_data[x_col],
-                    y=filtered_data[y_col],
-                    mode='lines+markers',
-                    name=f"{pattern_col}={value}"
-                ))
-            
+            # Add filter information to title
+            filter_text = " | ".join([f"{k}={v}" for k, v in filters.items()])
             fig.update_layout(
-                title=f"Comparison of {y_col} vs {x_col} for different {pattern_col} values",
-                xaxis_title=x_col,
-                yaxis_title=y_col
+                title=f"3D Plot: {z_col} vs {y_col} vs {x_col}<br><sup>Filters: {filter_text}</sup>",
+                scene=dict(
+                    xaxis_title=x_col,
+                    yaxis_title=y_col,
+                    zaxis_title=z_col
+                )
             )
+            
             st.plotly_chart(fig)
 
 if __name__ == "__main__":
